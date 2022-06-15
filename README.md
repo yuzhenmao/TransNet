@@ -3,7 +3,7 @@
 This is the pytorch implementation of _**TransNet**_.
 
 ### Datasets
-Please download from the original papers listed in our paper.
+Here, we only provide datasets M2 and A1. Please download other datasets from the original papers listed in our paper.
 
 ### Demo case:
 ```
