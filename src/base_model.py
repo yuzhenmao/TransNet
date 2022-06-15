@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import logging
 import torch
 import torch.nn as nn
@@ -23,11 +20,7 @@ class BASE(nn.Module):
     """
     def __init__(self, configs):
         super(BASE, self).__init__()
-        # self.input_dim = configs["input_dim"]
         self.num_hidden_layers = len(configs["hidden_layers"])
-        # self.num_neurons = [self.input_dim] + configs["hidden_layers"]
-        self.num_domains = configs["num_domains"]
-        # Parameters of hidden, fully-connected layers, feature learning component.
         self.hiddens = GNN(nfeat=configs["input_dim"],
                               nhid=configs["hidden_layers"],
                               nclass=configs["num_classes"],

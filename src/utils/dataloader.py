@@ -11,51 +11,26 @@ from sklearn import preprocessing
 import json
 import scipy.sparse
 from torch_geometric.io import read_txt_array
-from ogb.nodeproppred import PygNodePropPredDataset
 from torch_geometric.datasets import Amazon
 import os.path as osp
-
 import pdb
-
-# Set random number seed.
 
 
 class GraphLoader(object):
 
-    def __init__(self,name,root = "./data",undirected=True, hasX=True,hasY=True,header=True,sparse=True,multigraphindex=None,args=None):
+    def __init__(self,name,root = "./data", sparse=True, args=None):
 
-        if name == "reddit1401":
-            self.name = name + '_' + multigraphindex
-        else:
-            self.name = name
-        self.undirected = undirected
-        self.hasX = hasX
-        self.hasY = hasY
-        self.header = header
+        self.name = name
         self.sparse = sparse
-        if len(name) > 2 and name[0] != '_' and name[0] != 'W':
-            self.dirname = os.path.join(root,name)
-        else:
-            self.dirname = os.path.join(root,'input')
-        if name == "reddit1401":
-            self.prefix = os.path.join(root, name, multigraphindex, multigraphindex)
-        elif name[0] == '_':
-            self.prefix = os.path.join(root, name[1:])
-        elif name == 'C':
-            self.prefix = os.path.join(root,'input/'+'citationv1'+'.mat')
-        elif name == 'A':
-            self.prefix = os.path.join(root,'input/'+'acmv9'+'.mat')
-        elif name == 'D':
-            self.prefix = os.path.join(root,'input/'+'dblpv7'+'.mat')
-        elif name == 'B1':
-            self.prefix = os.path.join(root,'input/'+'Blog1'+'.mat')   
-        elif name == 'B2':
-            self.prefix = os.path.join(root,'input/'+'Blog2'+'.mat')   
-        else:
-            self.prefix = os.path.join(root, name, name)
+        self.dirname = os.path.join(root,'input')
+        if name == 'M2':
+            self.prefix = os.path.join(self.dirname,'citationv1.mat')
+        elif name == 'A2':
+            self.prefix = os.path.join(self.dirname,'acmv9.mat')
+        elif name == 'D2':
+            self.prefix = os.path.join(self.dirname,'dblpv7.mat') 
         self._load()
         self._registerStat()
-
 
     def _loadConfig(self):
         file_name = os.path.join(self.dirname,"bestconfig.txt")
@@ -63,48 +38,6 @@ class GraphLoader(object):
         L = f.readlines()
         L = [x.strip().split() for x in L]
         self.bestconfig = {x[0]:x[1] for x in L if len(x)!=0}
-
-
-    def _loadGraph(self, header = True):
-        """
-            load file in form:
-            --------------------
-            NUM_Of_NODE\n
-            v1 v2\n
-            v3 v4\n
-            --------------------
-        """
-        file_name = self.prefix+".edgelist"
-        if not header:
-            logger.warning("You are reading an edgelist with no explicit number of nodes")
-        if self.undirected:
-            G = nx.Graph()
-        else:
-            G = nx.DiGraph()
-        with open(file_name) as f:
-            L = f.readlines()
-            if header:
-                num_node = int(L[0].strip())
-                L = L[1:]
-            edge_list = [[int(x) for x in e.strip().split()] for e in L]
-            nodeset = set([x for e in edge_list for x in e])
-        
-        if header:
-            G.add_nodes_from([x for x in range(num_node)])
-        else:
-            G.add_nodes_from([x for x in range(max(nodeset)+1)])
-        G.add_edges_from(edge_list)
-        self.G = G
-        self.edges = torch.tensor(np.array(G.edges).T, dtype=torch.long).cuda()
-
-    def _loadX(self):
-        self.X = pkl.load(open(self.prefix + ".x.pkl", 'rb'))
-        self.X = self.X.astype(np.float32)
-        if self.name in  ["coauthor_phy","corafull"]:
-            self.X = self.X[:,:2000] # the coauthor_phy's feature is too large to fit in the memory.
-
-    def _loadY(self):
-        self.Y = pkl.load(open(self.prefix+".y.pkl",'rb'))#.astype(np.float32)
 
     def _getAdj(self):
         self.adj = nx.adjacency_matrix(self.G).astype(np.float32)
@@ -121,31 +54,30 @@ class GraphLoader(object):
             self.Y = torch.from_numpy(self.Y).cuda()
 
     def _load(self):
-        if self.name[0] == '_':
-            if self.name == '_com':
+        if self.name == 'comp' or self.name == 'photo':
+            if self.name == 'comp':
                 dataset = Amazon(root='data/', name='computers')
-            elif self.name == '_pt':
+            elif self.name == 'photo':
                 dataset = Amazon(root='data/', name='photo')
             graph = dataset[0]
             self.X = graph.x.numpy().astype(np.float32)
             self.Y = graph.y.numpy()
-            np.save(self.name+'_x', self.X)
-            np.save(self.name+'_y', self.Y)
             self.G = nx.Graph()
             for i in range(self.Y.shape[0]):
                 self.G.add_node(i)
             self.G.add_edges_from(graph.edge_index.numpy().T)
-
             self._loadConfig()
             self.edges = torch.tensor(np.array(self.G.edges).T, dtype=torch.long).cuda()  
             self._getAdj()
-
-        elif self.name[0] == 'W':
-            raw_dir = 'data/WWW'
-            edge_path = osp.join(raw_dir, '{}_edgelist.txt'.format(self.name[1:]))
+        elif self.name == 'A1' or self.name == 'D1':
+            if self.name == 'A1':
+                n = 'acm'
+            elif self.name == 'D1':
+                n = 'dblp'
+            edge_path = osp.join(self.dirname, '{}_edgelist.txt'.format(n))
             edge_index = read_txt_array(edge_path, sep=',', dtype=torch.long)
-            self.X = np.load(osp.join(raw_dir, self.name+'_x.npy'))
-            self.Y = np.load(osp.join(raw_dir, self.name+'_y.npy'))
+            self.X = np.load(osp.join(self.dirname, n+'_x.npy'))
+            self.Y = np.load(osp.join(self.dirname, n+'_y.npy'))
             self.G = nx.Graph()
             for i in range(self.Y.shape[0]):
                 self.G.add_node(i)
@@ -153,16 +85,6 @@ class GraphLoader(object):
             self._loadConfig()
             self.edges = torch.tensor(np.array(self.G.edges).T, dtype=torch.long).cuda()  
             self._getAdj()
-        
-        elif len(self.name) > 2:
-            self._loadGraph(header=self.header)
-            self._loadConfig()
-            if self.hasX:
-                self._loadX()
-            if self.hasY:
-                self._loadY()
-            self._getAdj()
-
         else:
             A, X, Y = load_network(self.prefix)
             self.X = np.array(X.astype(np.float32))
@@ -172,7 +94,6 @@ class GraphLoader(object):
             self._loadConfig()
             self.edges = torch.tensor(np.array(self.G.edges).T, dtype=torch.long).cuda()  
             self._getAdj()
-        
 
     def _registerStat(self):
         L=OrderedDict()
@@ -187,26 +108,16 @@ class GraphLoader(object):
         self.stat = L
 
     def process(self):
-        if int(self.bestconfig['feature_normalize']):
-            self.X = column_normalize(preprocess_features(self.X))
+        self.X = column_normalize(preprocess_features(self.X))
         self.normadj = preprocess_adj(self.adj)
         if not self.sparse:
             self.adj = self.adj.todense()
             self.normadj = self.normadj.todense()
         self._toTensor()
-        
-        self.normdeg = self._getNormDeg()
-
-    def _getNormDeg(self):
-        self.deg = torch.sparse.sum(self.adj, dim=1).to_dense()
-        normdeg =self.deg/ self.deg.max()
-        return normdeg
 
 
 # -----------------------------------------------------------------------------------------------------------------
 class MyData:
-    NEGATIVE_TABLE_SIZE = 1e8
-
     def __init__(self, actual_adj, labels, seed=123):
         self.actual_adj = actual_adj
         self.seed = seed

@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import numpy as np
 import time
 import argparse
@@ -9,13 +6,10 @@ import torch
 import torch.optim as optim
 import networkx as nx
 import torch.nn.functional as F
-from scipy.sparse import coo_matrix
 from model import TransNet, GeneralSignal
 import matplotlib.pyplot as plt
 from base_model import BASE
-from util import get_logger
-from util import data_loader, multi_data_loader
-from utils.utils import process_data, viz, viz_single, mixup_criterion, assign_sudo_label
+from utils.utils import get_logger, viz, viz_single, mixup_criterion, assign_sudo_label
 from utils.dataloader import GraphLoader, MyDataset, MyData
 from torch.utils.data import DataLoader
 from utils.logger import Logger
@@ -49,14 +43,14 @@ parser.add_argument("--root_dir", type=str, default='logs')   # output dir path
 parser.add_argument("--time", type=bool, default=True)   # add time to store path
 parser.add_argument("--save", type=bool, default=False)   # save the model or not
 parser.add_argument("--plt_i", type=int, default=1000)   # plot interval
-parser.add_argument("--few_shot", type=float, default=0.04)   # plot interval
+parser.add_argument("--few_shot", type=float, default=0.04)  # few_shot number (support decimal and int)
 parser.add_argument("--only", type=bool, default=False)   # only use the first dataset as target
 parser.add_argument("--viz", type=bool, default=False)   # visualization
 parser.add_argument("--gnn", type=str, default="gcn")   # choose to use which gnn: [gin, gcn, gat, graphsage]
-parser.add_argument("--disc", type=str, default='1')   # domain discriminator type
-parser.add_argument("--pre_finetune", type=int, default=0)   # fix diRedu and hidden, finetune classfier
+parser.add_argument("--disc", type=str, default='3')   # domain discriminator type
+parser.add_argument("--pre_finetune", type=int, default=200)   # fix diRedu and hidden, finetune classfier
 parser.add_argument("--_lambda", action='append', type=str, default=None)   # weight for different signals
-parser.add_argument("--_alpha", action='append', type=str, default=None)   # sudo weight for target domain
+parser.add_argument("--_alpha", action='append', type=str, default=None)   # weight for target domain
 parser.add_argument("--alpha", type=float, default=1.0)   # in mixup beta distribution
 parser.add_argument("--no_mixup", action='store_false', default=True)   # parameter in mixup
 parser.add_argument("--no_balance", action='store_false', default=True)   # weight for cluster loss
@@ -79,11 +73,8 @@ torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
 
 def train_epoch(model, dataset, dataloader, optimizer, num_data_sets, args, source_insts, 
-                target_insts, source_adj, source_labels, target_labels, target_adj, i, nbatch, device, 
+                target_insts, source_adj, source_labels, target_labels, target_adj, i, device, 
                 rate, sudo_weight, source_agent, target_agent, nclass, epoch):
-    running_loss = 0.0
-    dt_loss = 0.0
-    domain_loss = 0.0
     few_shot_idx = dataset[i].finetune_indices
     dloaders = []
     model.train()
@@ -98,91 +89,73 @@ def train_epoch(model, dataset, dataloader, optimizer, num_data_sets, args, sour
     t_labels = torch.ones(dataset[i].num, requires_grad=False).type(
         torch.LongTensor).to(device)
 
+    optimizer.zero_grad()
+    svec, tvec, sh_linear, th_linear, sdomains, tdomains, sdomains_0, tdomains_0 = model(source_insts, target_insts, source_adj, target_adj, rate)
 
-    for idx in range(min(nbatch)):
-        sindex = []
-        pos_u_idx = []
-        pos_v_idx = []
-        neg_v_idx = []
-        for j in range(num_data_sets):
-            if j != i:
-                batch = next(dloaders[j])
-                sindex.append(batch.to(device))
-        batch = next(dloaders[i])
-        tindex = batch.to(device)
-
-        optimizer.zero_grad()
-        svec, tvec, sh_linear, th_linear, sdomains, tdomains, sdomains_0, tdomains_0 = model(source_insts, target_insts, source_adj, target_adj, rate)
-
-        if sudo_weight > 0:
-            if epoch > 1000:
-                relax=True
-            else:
-                relax=False
-            target_agent.get_dicts(tvec, ass_idx, ass_label, relax)
-            dt_losses = torch.stack([(source_agent[j].make_loss(svec[j]) + sudo_weight * target_agent.make_loss(tvec, target_agent.dicts)) for j in range(num_domains)])
+    if sudo_weight > 0:
+        if epoch > 1000:
+            relax=True
         else:
-            dt_losses = torch.stack([(source_agent[j].make_loss(svec[j])) for j in range(num_domains)])
+            relax=False
+        target_agent.get_dicts(tvec, ass_idx, ass_label, relax)
+        dt_losses = torch.stack([(source_agent[j].make_loss(svec[j]) + sudo_weight * target_agent.make_loss(tvec, target_agent.dicts)) for j in range(num_sources)])
+    else:
+        dt_losses = torch.stack([(source_agent[j].make_loss(svec[j])) for j in range(num_sources)])
 
+    # Domain loss                                    
+    if args.no_balance == True:
+        selected_idxs = []
+        selected_idx = []
+        selected_label = []
+        temp_idx = np.arange(source_labels[0].shape[0])
+        for l_num in range(nclass[0]):
+            s_idx = (source_labels[0] == l_num).cpu().numpy()
+            if s_idx.sum() == 0:
+                continue
+            s_idx = np.random.choice(temp_idx[s_idx], mini_count, replace=False)
+            selected_idx += s_idx.tolist()
+            selected_label += [l_num]
+        selected_idxs.append(selected_idx)
 
-        # Domain loss                                    
-        if args.no_balance == True:
-            selected_idxs = []
-            selected_idx = []
-            selected_label = []
-            temp_idx = np.arange(source_labels[0].shape[0])
-            for l_num in range(nclass[0]):
-                s_idx = (source_labels[0] == l_num).cpu().numpy()
-                if s_idx.sum() == 0:
-                    continue
-                s_idx = np.random.choice(temp_idx[s_idx], mini_count, replace=False)
-                selected_idx += s_idx.tolist()
-                selected_label += [l_num]
-            selected_idxs.append(selected_idx)
+        domain_losses = torch.stack([F.nll_loss(sdomains[j][selected_idxs[j]], s_labels[selected_idxs[j]]) +
+                                    F.nll_loss(tdomains[j], t_labels)
+                                    for j in range(num_sources)])
+        domain_losses_0 = torch.stack([F.nll_loss(sdomains_0[j][selected_idxs[j]], s_labels[selected_idxs[j]]) +
+                                    F.nll_loss(tdomains_0[j], t_labels)
+                                    for j in range(num_sources)])
+    else:
+        domain_losses = torch.stack([F.nll_loss(sdomains[j], s_labels) +
+                                    F.nll_loss(tdomains[j], t_labels)
+                                    for j in range(num_sources)])
+        domain_losses_0 = torch.stack([F.nll_loss(sdomains_0[j], s_labels) +
+                                    F.nll_loss(tdomains_0[j], t_labels)
+                                    for j in range(num_sources)])
+    if args.disc == '2':
+        domain_losses = domain_losses_0
+    if args.disc == '3':
+        domain_losses = domain_losses + 5*domain_losses_0
 
-            domain_losses = torch.stack([F.nll_loss(sdomains[j][selected_idxs[j]], s_labels[selected_idxs[j]]) +
-                                        F.nll_loss(tdomains[j], t_labels)
-                                        for j in range(num_domains)])
-            domain_losses_0 = torch.stack([F.nll_loss(sdomains_0[j][selected_idxs[j]], s_labels[selected_idxs[j]]) +
-                                        F.nll_loss(tdomains_0[j], t_labels)
-                                        for j in range(num_domains)])
-        else:
-            domain_losses = torch.stack([F.nll_loss(sdomains[j], s_labels) +
-                                        F.nll_loss(tdomains[j], t_labels)
-                                        for j in range(num_domains)])
-            domain_losses_0 = torch.stack([F.nll_loss(sdomains_0[j], s_labels) +
-                                        F.nll_loss(tdomains_0[j], t_labels)
-                                        for j in range(num_domains)])
-        if args.disc == '2':
-            domain_losses = domain_losses_0
-        if args.disc == '3':
-            domain_losses = domain_losses + 5*domain_losses_0
+    loss = torch.max(dt_losses) + args.mu * torch.min(domain_losses)
 
-        loss = torch.max(dt_losses) + args.mu * torch.min(domain_losses)
+    running_loss = loss.item()
+    dt_loss = torch.max(dt_losses).item()
+    domain_loss = torch.max(domain_losses).item()
 
-        running_loss += loss.item()
-        dt_loss += torch.max(dt_losses).item()
-        domain_loss += torch.max(domain_losses).item()
-        loss.backward()
+    loss.backward()
+    optimizer.step()
 
-        optimizer.step()
-
-    return running_loss / min(nbatch), dt_loss / min(nbatch), domain_loss / min(nbatch), svec, tvec, sh_linear, th_linear
+    return running_loss, dt_loss, domain_loss, svec, tvec, sh_linear, th_linear
 
 
 def vali_epoch(model, dataset, dataloader, optimizer, num_data_sets, args, source_insts, 
-                target_insts, source_adj, source_labels, target_labels, target_adj, i, nbatch, device, 
+                target_insts, source_adj, source_labels, target_labels, target_adj, i, device, 
                 rate, sudo_weight, source_agent, target_agent, nclass, epoch):
     model.eval()
-    nbatch = 0
-    vali_loss = 0
-
     dloaders = []
     for j in range(num_data_sets):
         dataset[j].change_task('vali')
         dataloader = DataLoader(dataset[j], batch_size=len(dataset[j]),
                                 shuffle=True, num_workers=0, collate_fn=dataset[j].collate, drop_last=True)
-        nbatch = len(dataloader)
         dloaders.append(iter(dataloader))
 
     for j in range(num_data_sets):
@@ -195,39 +168,28 @@ def vali_epoch(model, dataset, dataloader, optimizer, num_data_sets, args, sourc
     with torch.no_grad():
         svec, tvec, sh_linear, th_linear, sdomains, tdomains, sdomains_0, tdomains_0 = model(source_insts, target_insts, source_adj, target_adj, rate)
 
-    for idx in range(nbatch):
-        sindex = []
-        pos_u_idx = []
-        pos_v_idx = []
-        neg_v_idx = []
-        for j in range(num_data_sets):
-            if j != i:
-                batch = next(dloaders[j])
-                sindex.append(batch.to(device))
-        batch = next(dloaders[i])
-        tindex = batch.to(device)
 
-        if sudo_weight > 0:
-            dt_losses = torch.stack([(source_agent[j].make_loss(svec[j], task='vali') + sudo_weight * target_agent.make_loss(tvec, target_agent.dicts, task='vali')) for j in range(num_domains)])
-        else:
-            dt_losses = torch.stack([(source_agent[j].make_loss(svec[j])) for j in range(num_domains)])
+    if sudo_weight > 0:
+        dt_losses = torch.stack([(source_agent[j].make_loss(svec[j], task='vali') + sudo_weight * target_agent.make_loss(tvec, target_agent.dicts, task='vali')) for j in range(num_sources)])
+    else:
+        dt_losses = torch.stack([(source_agent[j].make_loss(svec[j])) for j in range(num_sources)])
 
-        domain_losses = torch.stack([F.nll_loss(sdomains[j], s_labels) +
-                                    F.nll_loss(tdomains[j], t_labels)
-                                    for j in range(num_domains)])
-        domain_losses_0 = torch.stack([F.nll_loss(sdomains_0[j], s_labels) +
-                                    F.nll_loss(tdomains_0[j], t_labels)
-                                    for j in range(num_domains)])
-        if args.disc == '2':
-            domain_losses = domain_losses_0
-        if args.disc == '3':
-            domain_losses = domain_losses + 5*domain_losses_0
+    domain_losses = torch.stack([F.nll_loss(sdomains[j], s_labels) +
+                                F.nll_loss(tdomains[j], t_labels)
+                                for j in range(num_sources)])
+    domain_losses_0 = torch.stack([F.nll_loss(sdomains_0[j], s_labels) +
+                                F.nll_loss(tdomains_0[j], t_labels)
+                                for j in range(num_sources)])
+    if args.disc == '2':
+        domain_losses = domain_losses_0
+    if args.disc == '3':
+        domain_losses = domain_losses + 5*domain_losses_0
 
-        loss = torch.max(dt_losses) + args.mu * torch.min(domain_losses)
+    loss = torch.max(dt_losses) + args.mu * torch.min(domain_losses)
 
-        vali_loss += loss.item()
+    vali_loss = loss.item()
 
-    return vali_loss/nbatch
+    return vali_loss
 
 
 def test(model, dataset, args, insts, labels, adj, device, index=-1):
@@ -360,11 +322,8 @@ def agnn_fine_tune(model, dataset, args, target_insts, target_labels, target_adj
 
     return pred_acc
 
-
-# Loading the randomly partition the amazon data set.
 time_start = time.time()
 
-globel_number = 1
 graphs = []
 num_nodes, input_dim = [], []
 _alpha, _lambda = [], []
@@ -387,10 +346,14 @@ for i, data in enumerate(datasets):
 dataset_ = []
 data_name = []
 for g in graphs:
-    actual_adj, hide_adj, conn, conn_hide, conn_actual, frequency = process_data(g, g.name)
-    # actual_adj = g.adj.to_dense().cpu().numpy()
+    dirs = './src/pre_calculated_' + g.name
+    if os.path.exists(dirs):
+        pass
+    else:
+        os.makedirs(dirs)
+    adj = g.adj.to_dense().cpu().numpy()
+    actual_adj = adj.copy()
     data = MyData(actual_adj, g.Y, args.seed)
-    # print(data.num)
     dataset_.append(MyDataset(data, "train", ratio=args.ratio, few_shot=args.few_shot, seed=args.seed))
     data_name.append(g.name)
 
@@ -404,8 +367,7 @@ for i in range(num_data_sets):
     dataset = []
     for j in range(len(dataset_)):
         dataset.append(copy.deepcopy(dataset_[j]))
-    nclass, dataloader, nbatch, ndim = [], [], [], []
-    # get statistics of every domain
+    nclass, dataloader, ndim = [], [], []
     for j in range(num_data_sets):
         if j != i:
             nclass.append(graphs[j].Y.cpu().numpy().max()+1)
@@ -413,7 +375,6 @@ for i in range(num_data_sets):
         dataset[j].change_task('train')
         dataloader.append(DataLoader(dataset[j], batch_size=len(dataset[j]),
                                         shuffle=True, num_workers=0, collate_fn=dataset[j].collate, drop_last=True))
-        nbatch.append(len(dataloader[-1]))
     nclass.append(graphs[i].Y.cpu().numpy().max()+1)
     ndim.append(int(graphs[i].X.shape[1]))
     
@@ -478,13 +439,13 @@ for i in range(num_data_sets):
 
     # set parameters for mdanet
     configs = {"input_dim": ndim, "hidden_layers": args.hidden, "num_classes": nclass,
-                "num_epochs": args.epoch, "batch_size": args.batch_size, "lr": args.lr, "mu": args.mu, "num_domains":
+                "num_epochs": args.epoch, "batch_size": args.batch_size, "lr": args.lr, "mu": args.mu, "num_sources":
                     num_data_sets - 1, "ndim": args.dim,
                 "dropout": args.dropout, "finetune epoch": args.finetune_epoch, "train ratio": args.ratio,
                 "num_nodes": n_nodes, "type": args.gnn, "feat_num": args.feat_num}
     num_epochs = configs["num_epochs"]
     batch_size = configs["batch_size"]
-    num_domains = configs["num_domains"]
+    num_sources = configs["num_sources"]
     lr = configs["lr"]
     mu = configs["mu"]
     logger.info("Target domain is {}.".format(graphs[i].name))
@@ -509,7 +470,7 @@ for i in range(num_data_sets):
         # Train an assistant GNN
         print("########### Train assistant GNN ###################")
         agnn_configs = {"input_dim": ndim[-1], "hidden_layers": args.hidden, "num_classes": nclass[-1],
-                "num_epochs": args.epoch, "batch_size": args.batch_size, "lr": args.lr, "mu": args.mu, "num_domains":
+                "num_epochs": args.epoch, "batch_size": args.batch_size, "lr": args.lr, "mu": args.mu, "num_sources":
                     num_data_sets - 1, "ndim": args.dim,
                 "dropout": args.dropout, "finetune epoch": args.finetune_epoch, "train ratio": args.ratio,
                 "num_nodes": n_nodes, "type": args.gnn}
@@ -558,10 +519,10 @@ for i in range(num_data_sets):
             
             train_loss, dt_loss, domain_loss, svec, tvec, sh_linear, th_linear = train_epoch(transnet, dataset, dataloader, optimizer, num_data_sets,
                                                                                             args, source_insts, target_insts, source_adj, source_labels, target_labels,
-                                                                                            target_adj, i, nbatch, device, alpha, sudo_weight, source_agent, target_agent, nclass, t)
+                                                                                            target_adj, i, device, alpha, sudo_weight, source_agent, target_agent, nclass, t)
             vali_loss = vali_epoch(transnet, dataset, dataloader, optimizer, num_data_sets,
                                     args, source_insts, target_insts, source_adj, source_labels, target_labels,
-                                    target_adj, i, nbatch, device, alpha, sudo_weight, source_agent, target_agent, nclass, t)
+                                    target_adj, i, device, alpha, sudo_weight, source_agent, target_agent, nclass, t)
 
             # Test on source domains
             source_acc = {}
@@ -573,27 +534,16 @@ for i in range(num_data_sets):
                     source_acc[source_names[jj]] = pred_acc
                     log.add_metric(graphs[i].name+'_'+source_names[jj]+'_prediction_accuracy', pred_acc, t)
                     jj = jj + 1
-            log.add_metric(graphs[i].name + '_da_prediction_accuracy', pred_acc, t)
-            log.add_metric(graphs[i].name + '_da_micro_F', mic, t)
-            log.add_metric(graphs[i].name + '_da_macro_F', mac, t)
-            log.add_metric(graphs[i].name + '_da_recall_per_class', recall_per_class, t)
-            log.add_metric(graphs[i].name + '_da_precision_per_class', precision_per_class, t)
 
             if pred_acc > best_target_acc:
                 best_target_acc = pred_acc
                 best_epoch = t
 
-            logger.info("Epoch {}, train loss = {}, validation loss = {}, source_acc = {}".format(
-                t, train_loss, vali_loss, source_acc))
-
-            log.add_metric(graphs[i].name+'_dt_loss', dt_loss, t)
-            log.add_metric(graphs[i].name+'_domain_loss', domain_loss, t)
-            log.add_metric(graphs[i].name+'_train_loss', train_loss, t)
-            log.add_metric(graphs[i].name+'_vali_loss', vali_loss, t)
+            logger.info("Epoch {}, train loss = {}, source_acc = {}".format(t, train_loss, source_acc))
 
             if t>0 and t % args.plt_i == 0 and args.viz == True:
                 with torch.no_grad():
-                    logprobs, _, _ = transnet.inference(target_insts, target_adj, index=-1, sudo=True)
+                    logprobs, _, _ = transnet.inference(target_insts, target_adj, index=-1, pseudo=True)
                 preds_labels = torch.max(logprobs, 1)[1].squeeze_().detach().cpu()
                 viz_single(tvec, log._logdir, graphs[i].name, t, 0.0, target_labels, few_shot_labels, adapt=1, sudo_label=preds_labels, ass_node=ass_labels)
 
@@ -609,7 +559,7 @@ for i in range(num_data_sets):
                 torch.save(checkpoint, os.path.join(log._logdir, graphs[i].name, path_checkpoint))
         if num_epochs > 0 and args.viz == True:
             with torch.no_grad():
-                logprobs, _, _ = transnet.inference(target_insts, target_adj, index=-1, sudo=True)
+                logprobs, _, _ = transnet.inference(target_insts, target_adj, index=-1, pseudo=True)
             preds_labels = torch.max(logprobs, 1)[1].squeeze_().detach().cpu()
             viz_single(tvec, log._logdir, graphs[i].name, t+1, 0.0, target_labels, few_shot_labels, adapt=1, sudo_label=preds_labels, ass_node=ass_labels)
         print("=============================================================")

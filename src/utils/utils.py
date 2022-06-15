@@ -5,6 +5,8 @@ import warnings
 from sklearn.metrics import f1_score
 import torch
 import math
+import sys
+import logging
 import networkx as nx
 from tqdm import tqdm
 import os
@@ -75,17 +77,6 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     values = torch.from_numpy(sparse_mx.data)
     shape = torch.Size(sparse_mx.shape)
     return torch.sparse.FloatTensor(indices, values, shape)
-
-#================================================================
-def process_data(G, name):
-    dirs = './src/pre_calculated_' + name
-    if os.path.exists(dirs):
-        pass
-    else:
-        os.makedirs(dirs)
-    adj = G.adj.to_dense().cpu().numpy()
-    actual_adj = adj.copy()
-    return actual_adj, 0, 0, 0, 0, 0
 
 #================================================================
 def viz(svec, tvec, rootdir, tname, epoch, train_loss, dt_loss, domain_loss, linear=False):
@@ -225,12 +216,11 @@ def viz_single(tvec, rootdir, tname, epoch, loss, label, few_shot, adapt=0, sudo
 # =======================================================
 class NodeDistance:
 
-    def __init__(self, G, name, nclass=4):
+    def __init__(self, G, name):
         """
         :param graph: Networkx Graph.
         """
         self.graph = G
-        self.nclass = nclass
         self.name = name
 
     def get_label(self):
@@ -329,3 +319,22 @@ def assign_sudo_label(logprobs, labels, device, dicts = None, gcn_labels=None, a
         new_label.append(dicts.get(label, 0))
 
     return torch.LongTensor(new_label).to(device), dicts
+
+
+def get_logger(filename):
+    # Logging configuration: set the basic configuration of the logging system
+    log_formatter = logging.Formatter(fmt='%(asctime)s [%(processName)s, %(process)s] [%(levelname)-5.5s]  %(message)s',
+                                      datefmt='%m-%d %H:%M')
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    # File logger
+    file_handler = logging.FileHandler("{}.log".format(filename))
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+    # Stderr logger
+    std_handler = logging.StreamHandler(sys.stdout)
+    std_handler.setFormatter(log_formatter)
+    std_handler.setLevel(logging.INFO)
+    logger.addHandler(std_handler)
+    return logger

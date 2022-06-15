@@ -13,15 +13,6 @@ from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_poo
 import pdb
 
 class GINConv(MessagePassing):
-    """
-    Extension of GIN aggregation to incorporate edge information by concatenation.
-
-    Args:
-        emb_dim (int): dimensionality of embeddings for nodes and edges.
-        input_layer (bool): whethe the GIN conv is applied to input layer or not. (Input node labels are uniform...)
-
-    See https://arxiv.org/abs/1810.00826
-    """
     def __init__(self, in_dim, out_dim, aggr = "add"):
         super(GINConv, self).__init__()
         # multi-layer perceptron
@@ -59,7 +50,7 @@ class GNN(torch.nn.Module):
                 elif gnn_type == "gcn":
                     gc.append(GCNConv(nfeat, nhid[0]))
                 elif gnn_type == "gat":
-                    gc.append(GATConv(nfeat, nhid[0]))   # Do we need to change GAT head number?
+                    gc.append(GATConv(nfeat, nhid[0]))
                 elif gnn_type == "sage":
                     gc.append(SAGEConv(nfeat, nhid[0]))
             elif i == self.depth:

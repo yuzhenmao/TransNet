@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import logging
 import torch
 import torch.nn as nn
@@ -20,19 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class GradientReversalLayer(torch.autograd.Function):
-    """
-    Implement the gradient reversal layer for the convenience of domain adaptation neural network.
-    The forward part is the identity function while the backward part is the negative function.
-    """
-
     @staticmethod
     def forward(ctx, inputs):
-        # ctx.save_for_backward(inputs)
         return inputs                             
 
     @staticmethod
     def backward(ctx, grad_output):
-        # result, = ctx.saved_tensors
         grad_input = grad_output.clone()
         grad_input = -grad_input * ratio
 
@@ -45,13 +35,9 @@ class TransNet(nn.Module):
     """
     def __init__(self, configs):
         super(TransNet, self).__init__()
-        # self.input_dim = configs["input_dim"]
         self.num_hidden_layers = len(configs["hidden_layers"])
-        # self.num_neurons = [self.input_dim] + configs["hidden_layers"]
-        self.num_domains = configs["num_domains"]
+        self.num_sources = configs["num_sources"]
         self.num_classes = configs["num_classes"]
-        # Parameters of hidden, fully-connected layers, feature learning component.
-        # self.h_dim = min(configs["input_dim"])
         self.h_dim = configs['feat_num']
         self.hiddens = GNN(nfeat=self.h_dim,
                               nhid=configs["hidden_layers"],
@@ -63,29 +49,21 @@ class TransNet(nn.Module):
         self.domain_disc = torch.nn.Sequential(
             nn.Linear(configs["ndim"], configs["ndim"]),
             nn.LeakyReLU(0.2, inplace=True),
-            # nn.Dropout(0.1),
             nn.Linear(configs["ndim"], 2),
-            # nn.Linear(configs["ndim"], 2),
         )
         self.domain_disc_linear = torch.nn.Sequential(
             nn.Linear(self.h_dim, self.h_dim),
             nn.LeakyReLU(0.2, inplace=True),
-            # nn.Dropout(0.1),
             nn.Linear(self.h_dim, 2),
-            # nn.Linear(configs["ndim"], 2),
         )
         # Parameter of the first dimension reduction layer.
         self.dimRedu = nn.ModuleList([torch.nn.Sequential(nn.Dropout(p=0.7), nn.Linear(ndim, self.h_dim)) for ndim in configs["input_dim"]])
         # Parameter of the final softmax classification layer.
         self.triplet_embedding = nn.ModuleList([torch.nn.Sequential(
-                                            # nn.Dropout(p=0.5),
                                             nn.Linear(2*configs["ndim"], configs["ndim"]),
-                                            # nn.ReLU(),
                                             ) for _ in configs["num_classes"]])
         self.classifier = nn.ModuleList([torch.nn.Sequential(
                                             nn.Dropout(p=0.5),
-                                            # nn.Linear(2*configs["ndim"], 2*configs["ndim"]),
-                                            # nn.ReLU(),
                                             nn.Linear(configs["ndim"], 2*nclass+1)) for nclass in configs["num_classes"]])
         self.gnn_classifier = GNN(nfeat=configs["ndim"], 
                                 nhid=[configs["ndim"]], 
@@ -95,40 +73,30 @@ class TransNet(nn.Module):
                                 bias=True, 
                                 dropout=0.5, 
                                 batch_norm=False)
-        # Parameter of the domain classification layer, multiple sources single target domain adaptation.
-        self.domains = nn.ModuleList([self.domain_disc for _ in range(self.num_domains)])
-        self.domains_linear = nn.ModuleList([self.domain_disc_linear for _ in range(self.num_domains)])
+        self.domains = nn.ModuleList([self.domain_disc for _ in range(self.num_sources)])
+        self.domains_linear = nn.ModuleList([self.domain_disc_linear for _ in range(self.num_sources)])
         # Gradient reversal layer.
-        self.grls = [GradientReversalLayer.apply for _ in range(self.num_domains)]
+        self.grls = [GradientReversalLayer.apply for _ in range(self.num_sources)]
         self.t_class = configs["num_classes"][-1]
         self.t_dim = configs["ndim"]
 
-        # TODO make the domain discriminator more complicated
-
-
     def forward(self, sinputs, tinputs, sadj, tadj, rate):
-        """
-        :param sinputs:     A list of k inputs from k source domains.
-        :param tinputs:     Input from the target domain.
-        :return:
-        """
         global ratio
         ratio = rate
 
         sh_relu = []
         sh_linear = []
         th_relu = tinputs.clone()
-        for i in range(self.num_domains):
+        for i in range(self.num_sources):
             sh_relu.append(sinputs[i].clone())
 
-        for i in range(self.num_domains):
+        for i in range(self.num_sources):
             sh_linear.append(self.dimRedu[i](sh_relu[i]))
-            sh_relu[i] = F.relu(self.hiddens(sh_linear[i], sadj[i]))  # check the output of dimRedu (TSNE)
+            sh_relu[i] = F.relu(self.hiddens(sh_linear[i], sadj[i]))
         th_linear = self.dimRedu[-1](th_relu)
         th_relu = F.relu(self.hiddens(th_linear, tadj))
-        # Domain classification accuracies.
-        sdomains, tdomains, sdomains_linear, tdomains_linear, mixups = [], [], [], [], []
-        for i in range(self.num_domains):
+        sdomains, tdomains, sdomains_linear, tdomains_linear = [], [], [], []
+        for i in range(self.num_sources):
             sdomains.append(F.log_softmax(self.domains[i](self.grls[i](sh_relu[i])), dim=1))
             tdomains.append(F.log_softmax(self.domains[i](self.grls[i](th_relu)), dim=1))
             sdomains_linear.append(F.log_softmax(self.domains_linear[i](self.grls[i](sh_linear[i])), dim=1))
@@ -148,12 +116,11 @@ class TransNet(nn.Module):
         for param in self.dimRedu[-1].parameters():
             param.requires_grad = True
 
-    def inference(self, tinput, adj, index=-1, sudo=False):
+    def inference(self, tinput, adj, index=-1, pseudo=False):
         h_relu = tinput.clone()
         h_linear = self.dimRedu[index](h_relu)
         h_relu = F.relu(self.hiddens(h_linear, adj))
-        # Classification probability.
-        if sudo is True:
+        if pseudo is True:
             index = 0
         if index == -1:
             logprobs = F.log_softmax(self.gnn_classifier(h_relu, adj), dim=1)
@@ -196,12 +163,7 @@ class GeneralSignal(object):
         np.random.seed(seed)
 
         self.all = np.arange(self.adj.shape[0])
-        self.unlabeled = np.array([n for n in self.all if n not in self.idx_train])
-
-        d = {'pubmed': 30, 'cora':10, 'citeseer': 10, 'reddit1401_graph1': 10, 'reddit1401_graph2': 10, 'reddit1401_graph3': 10}  # Maybe set the actual label number?
-        self.nclass = 6
-
-        self.agent = NodeDistance(self.G, nclass=self.nclass, name=self.name)
+        self.agent = NodeDistance(self.G, name=self.name)
         self.pseudo_labels = self.agent.get_label().to(self.device)
         self.train_pseudo_labels = self.pseudo_labels[self.idx_train,:][:,self.idx_train]
         self.train_distance = self.agent.distance[self.idx_train,:][:,self.idx_train]
@@ -250,11 +212,9 @@ class GeneralSignal(object):
         else:
             if task == 'train':
                 node_pairs = self.sample(self.train_distance, self.train_tmps, k=self.train_sample_num)
-                # node_pairs = [np.arange(self.idx_train.shape[0]), np.arange(self.idx_train.shape[0])]
                 embeddings0 = embeddings[self.idx_train[node_pairs[0]]]
                 embeddings1 = embeddings[self.idx_train[node_pairs[1]]]
             elif task == 'vali':
-                # node_pairs = self.sample(self.vali_agent.distance, self.vali_tmps, k=self.vali_sample_num)
                 node_pairs = [self.idx_vali, self.idx_vali]
                 embeddings0 = embeddings[node_pairs[0]]
                 embeddings1 = embeddings[node_pairs[1]]
@@ -265,7 +225,7 @@ class GeneralSignal(object):
         output = self.model.classifier[self.index](hidden_embedding)
 
         label0_loss, label1_loss, dist_loss = 0.0, 0.0, 0.0
-        if self.index == -1:  # TODO, add sampled distance in the future
+        if self.index == -1:
             permu = np.random.permutation(self.idx_finetune.shape[0])
             few_shot_pair = torch.cat((embeddings[self.idx_finetune], embeddings[self.idx_finetune][permu]), 1)
             few_shot_embedding = self.model.triplet_embedding[0](few_shot_pair)
@@ -304,7 +264,6 @@ class GeneralSignal(object):
             elif task == 'vali':
                 task_labels = self.pseudo_labels
                 task_index = self.all
-            # node_samples = list(set(node_pairs[1]) | set(node_pairs[0]))
             pred_label0 = output[:, :self.nlabel]
             pred_label1 = output[:, self.nlabel:2*self.nlabel]
             pred_label0 = F.log_softmax(pred_label0, dim=1)
@@ -313,7 +272,6 @@ class GeneralSignal(object):
             label1_loss = F.nll_loss(pred_label1, self.labels[task_index[node_pairs[1]]])
             pred_dist = output[:, -1]
             dist_loss = F.mse_loss(pred_dist, task_labels[node_pairs], reduction='mean')
-            # Mixup for the hidden layer
             if task == 'train':
                 if self.mixup:
                     x_mix, permuted_idx, lam = mixup_hidden(hidden_embedding, self.alpha)
@@ -328,7 +286,7 @@ class GeneralSignal(object):
 
         return (label0_loss+label1_loss)/2 + self._lambda*dist_loss
 
-    def sample(self, labels, tmps, k=[500, 1000, 2000, 4000, 6000, 8000]):
+    def sample(self, labels, tmps, k):
         node_pairs = []
         for i in range(0, 6):
             tmp = tmps[i]
