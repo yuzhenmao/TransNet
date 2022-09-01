@@ -1,6 +1,6 @@
-# Augmenting Knowledge Transfer across Graphs
+# TransNet
 
-This is the pytorch implementation of _**TransNet**_.
+This is the pytorch implementation of _**Augmenting Knowledge Transfer across Graphs**_, published in ICDM 2022.
 
 We introduce a novel notion named trinity signal that can naturally formulate various graph signals at different granularity (e.g., node attributes, edges, and subgraphs). With that, we further propose a domain unification module together with a trinity-signal mixup scheme to jointly minimize the domain discrepancy and augment the knowledge transfer across graphs. Comprehensive empirical results corroborate our theoretical findings and show that _**TransNet**_ outperforms all existing approaches on seven benchmark datasets by a significant margin.
 
