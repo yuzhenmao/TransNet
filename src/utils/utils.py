@@ -225,15 +225,15 @@ class NodeDistance:
 
     def get_label(self):
         distance = np.zeros([len(self.graph), len(self.graph)])
-        dirs = './src/pre_calculated_' + self.name
-        if os.path.exists(os.path.join(dirs, "distance.npy")):
-            distance = np.load(os.path.join(dirs, "distance.npy"))
-        else:
-            for i in tqdm(self.graph.nodes()):
-                pr = nx.pagerank(self.graph, personalization={i:1})
-                dist = np.array(list(pr.values())).astype(float)
-                distance[i,:] = dist
-            np.save(os.path.join(dirs, "distance.npy"), distance)
+        # dirs = './src/pre_calculated_' + self.name
+        # if os.path.exists(os.path.join(dirs, "distance.npy")):
+        #     distance = np.load(os.path.join(dirs, "distance.npy"))
+        # else:
+        for i in tqdm(self.graph.nodes()):
+            pr = nx.pagerank(self.graph, personalization={i:1})
+            dist = np.array(list(pr.values())).astype(float)
+            distance[i,:] = dist
+        # np.save(os.path.join(dirs, "distance.npy"), distance)
 
         self.same_node = np.diag(distance).min()
         self.distance = distance

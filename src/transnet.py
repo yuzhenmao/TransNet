@@ -24,7 +24,7 @@ import copy
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-n", "--name", help="Name used to save the log file.", type=str, default="amazon")
+parser.add_argument("-n", "--name", help="Name used to save the log file.", type=str, default="logs")
 parser.add_argument("-s", "--seed", help="Random seed.", type=int, default=93)
 parser.add_argument("-u", "--mu", help="coefficient for the domain adversarial loss", type=float, default=1e-2)
 parser.add_argument('--hidden', type=list, default=[64, 32], help='Number of hidden units.')  # append to the last layer
@@ -364,31 +364,34 @@ logger.info("Time used to process the data set = {} seconds.".format(time_end - 
 num_data_sets = len(dataset_)
 
 for i in range(num_data_sets):
+    graphs_ = []
+    for j in range(len(graphs)):
+        graphs_.append(copy.deepcopy(graphs[j]))
     dataset = []
     for j in range(len(dataset_)):
         dataset.append(copy.deepcopy(dataset_[j]))
     nclass, dataloader, ndim = [], [], []
     for j in range(num_data_sets):
         if j != i:
-            nclass.append(graphs[j].Y.cpu().numpy().max()+1)
-            ndim.append(int(graphs[j].X.shape[1]))
+            nclass.append(graphs_[j].Y.cpu().numpy().max()+1)
+            ndim.append(int(graphs_[j].X.shape[1]))
         dataset[j].change_task('train')
         dataloader.append(DataLoader(dataset[j], batch_size=len(dataset[j]),
                                         shuffle=True, num_workers=0, collate_fn=dataset[j].collate, drop_last=True))
-    nclass.append(graphs[i].Y.cpu().numpy().max()+1)
-    ndim.append(int(graphs[i].X.shape[1]))
+    nclass.append(graphs_[i].Y.cpu().numpy().max()+1)
+    ndim.append(int(graphs_[i].X.shape[1]))
     
     selected_idx = []
     selected_label = []
     if nclass[-1] < nclass[0]:
         for j in range(num_data_sets):
             if j != i:
-                uniques, counts = graphs[j].Y.unique(return_counts=True)
+                uniques, counts = graphs_[j].Y.unique(return_counts=True)
                 uniques = uniques.cpu().numpy()
-                temp_idx = np.arange(graphs[j].Y.shape[0])
+                temp_idx = np.arange(graphs_[j].Y.shape[0])
                 for l_num in range(nclass[-1]):
                     s_label = uniques[counts.argmax()]
-                    s_idx = (graphs[j].Y == s_label).cpu().numpy()
+                    s_idx = (graphs_[j].Y == s_label).cpu().numpy()
                     selected_idx += temp_idx[s_idx].tolist()
                     selected_label += [s_label]
                     counts[counts.argmax()] = 0
@@ -396,16 +399,16 @@ for i in range(num_data_sets):
                 new_label = 0
                 np.random.shuffle(selected_idx)
                 nclass[0] = nclass[-1]
-                graphs[j].X = graphs[j].X[selected_idx]
-                graphs[j].normadj = graphs[j].normadj.to_dense()[selected_idx,:][:,selected_idx].to_sparse()
-                graphs[j].adj = graphs[j].adj.to_dense()[selected_idx,:][:,selected_idx].to_sparse()
-                graphs[j].G = nx.from_numpy_matrix(graphs[j].adj.to_dense().cpu().numpy())
-                graphs[j].Y = graphs[j].Y[selected_idx]
-                copy_labels = copy.deepcopy(graphs[j].Y)
+                graphs_[j].X = graphs_[j].X[selected_idx]
+                graphs_[j].normadj = graphs_[j].normadj.to_dense()[selected_idx,:][:,selected_idx].to_sparse()
+                graphs_[j].adj = graphs_[j].adj.to_dense()[selected_idx,:][:,selected_idx].to_sparse()
+                graphs_[j].G = nx.from_numpy_matrix(graphs_[j].adj.to_dense().cpu().numpy())
+                graphs_[j].Y = graphs_[j].Y[selected_idx]
+                copy_labels = copy.deepcopy(graphs_[j].Y)
                 for s_label in selected_label:
-                    graphs[j].Y[copy_labels == s_label] = new_label
+                    graphs_[j].Y[copy_labels == s_label] = new_label
                     new_label += 1
-                data = MyData(graphs[j].normadj.to_dense(), graphs[j].Y, args.seed)
+                data = MyData(graphs_[j].normadj.to_dense(), graphs_[j].Y, args.seed)
                 dataset[j] = MyDataset(data, "train", ratio=args.ratio, few_shot=args.few_shot, seed=args.seed)
                 dataloader[j] = DataLoader(dataset[j], batch_size=len(dataset[j]),
                                         shuffle=True, num_workers=0, collate_fn=dataset[j].collate, drop_last=True)
@@ -419,16 +422,16 @@ for i in range(num_data_sets):
 
     for j in range(num_data_sets):
         if j != i:
-            source_insts.append(graphs[j].X)
-            source_adj.append(graphs[j].normadj.to_dense())
-            source_labels.append(graphs[j].Y)
-            source_names.append(graphs[j].name)
+            source_insts.append(graphs_[j].X)
+            source_adj.append(graphs_[j].normadj.to_dense())
+            source_labels.append(graphs_[j].Y)
+            source_names.append(graphs_[j].name)
 
     # Build target instances.
     target_idx = i
-    target_insts = graphs[i].X
-    target_adj = graphs[i].normadj.to_dense()
-    target_labels = graphs[i].Y
+    target_insts = graphs_[i].X
+    target_adj = graphs_[i].normadj.to_dense()
+    target_labels = graphs_[i].Y
         
     mini_count = 999999999
     for j in range(num_data_sets):
@@ -437,7 +440,6 @@ for i in range(num_data_sets):
             if counts.cpu().numpy().min() < mini_count:
                 mini_count = counts.cpu().numpy().min()
 
-    # set parameters for mdanet
     configs = {"input_dim": ndim, "hidden_layers": args.hidden, "num_classes": nclass,
                 "num_epochs": args.epoch, "batch_size": args.batch_size, "lr": args.lr, "mu": args.mu, "num_sources":
                     num_data_sets - 1, "ndim": args.dim,
@@ -448,20 +450,20 @@ for i in range(num_data_sets):
     num_sources = configs["num_sources"]
     lr = configs["lr"]
     mu = configs["mu"]
-    logger.info("Target domain is {}.".format(graphs[i].name))
+    logger.info("Target domain is {}.".format(graphs_[i].name))
     logger.info("Hyperparameter setting = {}.".format(configs))
 
     # For visualization
     few_shot_labels = target_labels.clone()*0-1
     few_shot_labels[dataset[i].finetune_indices] = target_labels[dataset[i].finetune_indices]
-    # Train DannNet.
+
     transnet = TransNet(configs).to(device)
-    target_agent = GeneralSignal(graphs[i], graphs[i].adj, target_labels, target_insts, dataset=dataset[i], 
+    target_agent = GeneralSignal(graphs_[i], graphs_[i].adj, target_labels, target_insts, dataset=dataset[i], 
             nhid=args.dim, device=device, args = args, seed=args.seed, model=transnet, index=-1, _lambda=_lambda[i])
     jj = 0
     for j in range(num_data_sets):
         if j != i:
-            source_agent.append(GeneralSignal(graphs[j], graphs[j].adj, source_labels[jj], source_insts[jj], dataset=dataset[j], 
+            source_agent.append(GeneralSignal(graphs_[j], graphs_[j].adj, source_labels[jj], source_insts[jj], dataset=dataset[j], 
                     nhid=args.dim, device=device, args = args, seed=args.seed, model=transnet, index=jj, _lambda=_lambda[i]))
             jj += 1
     optimizer = optim.Adam(transnet.parameters(), lr=lr, betas=(0.5, 0.999))
@@ -477,7 +479,7 @@ for i in range(num_data_sets):
         agnn = BASE(agnn_configs).to(device)
         agnn_optimizer = optim.Adam(agnn.parameters(), lr=lr, betas=(0.5, 0.999))
 
-        pred_acc = agnn_fine_tune(agnn, dataset[i], args, target_insts, target_labels, target_adj, i, device, graphs[i], few_shot_labels)
+        pred_acc = agnn_fine_tune(agnn, dataset[i], args, target_insts, target_labels, target_adj, i, device, graphs_[i], few_shot_labels)
         print("########### Finish assistant GNN ###################")
 
 
@@ -532,7 +534,7 @@ for i in range(num_data_sets):
                     pred_acc, mic, mac, recall_per_class, precision_per_class = test_source(transnet, dataset[j], args, source_insts[jj], 
                         source_labels[jj], source_adj[jj], device, index=jj)
                     source_acc[source_names[jj]] = pred_acc
-                    log.add_metric(graphs[i].name+'_'+source_names[jj]+'_prediction_accuracy', pred_acc, t)
+                    log.add_metric(graphs_[i].name+'_'+source_names[jj]+'_prediction_accuracy', pred_acc, t)
                     jj = jj + 1
 
             if pred_acc > best_target_acc:
@@ -545,7 +547,7 @@ for i in range(num_data_sets):
                 with torch.no_grad():
                     logprobs, _, _ = transnet.inference(target_insts, target_adj, index=-1, pseudo=True)
                 preds_labels = torch.max(logprobs, 1)[1].squeeze_().detach().cpu()
-                viz_single(tvec, log._logdir, graphs[i].name, t, 0.0, target_labels, few_shot_labels, adapt=1, sudo_label=preds_labels, ass_node=ass_labels)
+                viz_single(tvec, log._logdir, graphs_[i].name, t, 0.0, target_labels, few_shot_labels, adapt=1, sudo_label=preds_labels, ass_node=ass_labels)
 
             # Save weight
             if t == num_epochs - 1 and args.save is True:
@@ -554,17 +556,17 @@ for i in range(num_data_sets):
                                 "loss": train_loss,
                                 "epoch": t}
                 path_checkpoint = "checkpoint_{}".format(t)
-                if not os.path.exists(os.path.join(log._logdir, graphs[i].name)):
-                    os.makedirs(os.path.join(log._logdir, graphs[i].name))
-                torch.save(checkpoint, os.path.join(log._logdir, graphs[i].name, path_checkpoint))
+                if not os.path.exists(os.path.join(log._logdir, graphs_[i].name)):
+                    os.makedirs(os.path.join(log._logdir, graphs_[i].name))
+                torch.save(checkpoint, os.path.join(log._logdir, graphs_[i].name, path_checkpoint))
         if num_epochs > 0 and args.viz == True:
             with torch.no_grad():
                 logprobs, _, _ = transnet.inference(target_insts, target_adj, index=-1, pseudo=True)
             preds_labels = torch.max(logprobs, 1)[1].squeeze_().detach().cpu()
-            viz_single(tvec, log._logdir, graphs[i].name, t+1, 0.0, target_labels, few_shot_labels, adapt=1, sudo_label=preds_labels, ass_node=ass_labels)
+            viz_single(tvec, log._logdir, graphs_[i].name, t+1, 0.0, target_labels, few_shot_labels, adapt=1, sudo_label=preds_labels, ass_node=ass_labels)
         print("=============================================================")
         line = "{} - Epoch: {}, best_target_acc: {}"\
-            .format(graphs[i].name, best_epoch, best_target_acc)
+            .format(graphs_[i].name, best_epoch, best_target_acc)
         print(line)
         time_end = time.time()
     else:
@@ -578,15 +580,15 @@ for i in range(num_data_sets):
         few_shot_labels[dataset[i].finetune_indices] = target_labels[dataset[i].finetune_indices]
 
     # Finetune on target domain
-    pred_acc = fine_tune(transnet, dataset[i], args, target_insts, target_labels, target_adj, i, device, graphs[i], few_shot_labels)
+    pred_acc = fine_tune(transnet, dataset[i], args, target_insts, target_labels, target_adj, i, device, graphs_[i], few_shot_labels)
 
     logger.info("label prediction accuracy on {} = {}, time used = {} seconds.".
                 format(data_name[i], pred_acc, time_end - time_start))
 
     dataset[i].change_task('train')
-    if args.only == True:
-        break
+    # if args.only == True:
+    #     break 
+    break
 logger.info("*" * 100)
-
 
 

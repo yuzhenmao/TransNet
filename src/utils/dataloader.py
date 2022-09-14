@@ -24,11 +24,11 @@ class GraphLoader(object):
         self.sparse = sparse
         self.dirname = os.path.join(root,'input')
         if name == 'M2':
-            self.prefix = os.path.join(self.dirname,'citationv1.mat')
+            self.path = os.path.join(self.dirname,'citationv1.mat')
         elif name == 'A2':
-            self.prefix = os.path.join(self.dirname,'acmv9.mat')
+            self.path = os.path.join(self.dirname,'acmv9.mat')
         elif name == 'D2':
-            self.prefix = os.path.join(self.dirname,'dblpv7.mat') 
+            self.path = os.path.join(self.dirname,'dblpv7.mat') 
         self._load()
         self._registerStat()
 
@@ -86,7 +86,7 @@ class GraphLoader(object):
             self.edges = torch.tensor(np.array(self.G.edges).T, dtype=torch.long).cuda()  
             self._getAdj()
         else:
-            A, X, Y = load_network(self.prefix)
+            A, X, Y = load_network(self.path)
             self.X = np.array(X.astype(np.float32))
             self.X = self.X[:, self.X.sum(0) != 0]
             self.Y = Y
